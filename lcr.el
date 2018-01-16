@@ -1,88 +1,104 @@
-;;; lcc.el  -*- lexical-binding: t -*-
+;;; lcr.el  -*- lexical-binding: t -*-
 
-;;; Copyright (C) 2015-2016 Free Software Foundation, Inc.
+;; Lightweight coroutines.
 
-;; Author: Daniel Colascione <dancol@dancol.org>
-;; Keywords: extensions, elisp
+;;; Copyright (C) 2018 Jean-Philippe Bernardy.
 
+;; With parts copied from the work of Daniel Colascione
+;; <dancol@dancol.org> on generators.
 
+(require 'dash)
 
+;;; Code:
 
-(defun lcc-call (fun &rest args)
-  (error "`lcc-call' used outside a co-routine"))
+(defun lcr-call (fun &rest args)
+  "Call the coroutine FUN with arguments ARGS."
+  (error "`lcr-call' used outside a co-routine (%S %S)" fun args))
 
-(defvar lcc--yield-seen)
-(setq lcc-inhibit-atomic-optimization t)
-(defun lcc--atomic-p (form)
-  "Return whether the given form never yields."
-
-  (and (not lcc-inhibit-atomic-optimization)
-       (let* ((lcc-yield-seen))
+(defvar lcr--yield-seen)
+(defconst lcr-inhibit-atomic-optimization t)
+(defun lcr--atomic-p (form)
+  "Return whether the given FORM never jumps to another coroutine."
+  (and (not lcr-inhibit-atomic-optimization)
+       (let* ((lcr-yield-seen))
          (ignore (macroexpand-all
-                  `(cl-macrolet ((lcc-call (fun &rest args) (setf lcc-yield-seen t)))
+                  `(cl-macrolet ((lcr-call (fun &rest args) (setf lcr-yield-seen t)))
                      ,form)
                   macroexpand-all-environment))
-         (not lcc-yield-seen))))
+         (not lcr-yield-seen))))
+
+(defmacro def-lcr (name arglist &rest body)
+  "Define a lightweight coroutine with NAME, ARGLIST and BODY."
+  (declare (indent 2))
+  `(progn
+     (put ,name 'lcr? t)
+     (defun ,name ,(-snoc  arglist 'lcr--continuation)
+       ,(lcr--transform-1 `(progn ,@body) (lambda (x) `(funcall lcr--continuation ,x))))))
+
+(defmacro lcr-async-bind (var expr &rest body)
+  "Bind VAR in a continuation passed to EXPR with contents BODY.
+EXPR is turned to a co-routine but BODY is executed in direct
+style (but only after EXPR returns)."
+  (declare (indent 2))
+  (lcr--transform-1 expr `(lambda (,var) ,@body)))
+
+(defmacro lcr-async-let (bindings &rest body)
+"Expand multiple BINDINGS and call BODY as a continuation."
+  (declare (indent 2))
+  (pcase bindings
+    (`((,vars ,expr)) `(lcr-async-bind ,vars ,expr ,@body))
+    (`((,vars ,expr) . ,rest) `(lcr-async-bind ,vars ,expr (lcr-async-let ,rest ,@body)))))
 
 
-(lcc--transform-1 ''example (lambda (x) x))
-(lcc--transform-1 '(and a b) (lambda (x) x))
-(lcc--transform-1 '(progn (if a b c) d) (lambda (x) x))
-(lcc--transform-1 '(progn a b c d) (lambda (x) x))
-(lcc--transform-1 '(if a b c d) (lambda (x) x))
-(lcc--transform-1 '(if a (and e f) c d) (lambda (x) x))
-(lcc--transform-1 '(let () aowfutn) (lambda (x) x))
-(lcc--transform-1 '(let ((x yop)) (and a b)) (lambda (x) x))
-(lcc--transform-1 '(let* ((x yop)) (and a b)) (lambda (x) x))
-(lcc--transform-1 '(or) (lambda (x) x))
-(lcc--transform-1 '(or a) (lambda (x) x))
-(lcc--transform-1 '(or a b) (lambda (x) x))
-(lcc--transform-1 '(prog1 a b c) (lambda (x) x))
-(lcc--transform-1 '(prog2 a b c) (lambda (x) x))
+(defun lcr--transform-body (forms k)
+  "Transform FORMS and pass the result of the last form to K."
+  (lcr--transform-1 `(progn ,@forms) k))
 
-(lcc--transform-n '(x y z) (lambda (xs) xs))
-(lcc--transform-n '() (lambda (xs) xs))
-
-
-(defun lcc--transform-n (forms k)
-  "Transform FORMS and pass the results to K."
+(defun lcr--transform-n (forms k)
+  "Transform FORMS and pass all the results, as a list, to K."
   (pcase forms
     (`() (funcall k ()))
-    (`(,form . ,rest) (lcc--transform-1 form (lambda (x) (lcc--transform-n rest (lambda (xs) (funcall k (cons x xs)))))))
-  ))
+    (`(,form . ,rest)
+     (lcr--transform-1
+      form
+      (lambda (x) (lcr--transform-n rest (lambda (xs) (funcall k (cons x xs)))))))))
 
-(defun lcc--transform-1 (form k)
+;; see cps--transform-1 for all possible forms.
+(defun lcr--transform-1 (form k)
   "Transform FORM and pass the result to K."
   (pcase form
-    ;; ((guard (lcc--atomic-p form))
-    ;; (let (x (cl-gensym))
-    ;;  `(let ((,x ,form)) ,(funcall k x))))
+    ;; Process atomic expressions.
+    ((guard (lcr--atomic-p form))
+     (let (x (cl-gensym "atom"))
+       `(let ((,x ,form)) ,(funcall k x))))
 
     ((guard (atom form)) (funcall k form))
 
     ;; Process `and'.
     (`(and) (funcall k 't))
-    (`(and ,condition)                  ; (and CONDITION) -> CONDITION
-      (lcc--transform-1 condition k))
+    (`(and ,condition)
+      (lcr--transform-1 condition k))
     (`(and ,condition . ,rest)
-      (lcc--transform-1 condition
-                        (lambda (x)
-                          `(if ,x ,(lcc--transform-1 `(and ,@rest) k)
-                             ,(funcall k 'nil)))))
-    (`(cond)                            ; (cond) -> nil
-      (lcc--transform-1 nil k))
+      (lcr--transform-1
+       condition
+       (lambda (x)
+         `(if ,x ,(lcr--transform-1 `(and ,@rest) k)
+            ,(funcall k 'nil)))))
+    ;; Process `cond'.
+    (`(cond)
+      (lcr--transform-1 nil k))
     (`(cond (,condition) . ,rest)
-     (lcc--transform-1 `(or ,condition (cond ,@rest)) k))
+     (lcr--transform-1 `(or ,condition (cond ,@rest)) k))
     (`(cond (,condition . ,body) . ,rest)
-     (lcc--transform-1 `(if ,condition
+     (lcr--transform-1 `(if ,condition
                             (progn ,@body)
                           (cond ,@rest))
                        k))
     (`(cond (,condition) . ,rest)
-      (lcc--transform-1 `(or ,condition (cond ,@rest))
+      (lcr--transform-1 `(or ,condition (cond ,@rest))
                         next-state))
     (`(cond (,condition . ,body) . ,rest)
-      (lcc--transform-1 `(if ,condition
+      (lcr--transform-1 `(if ,condition
                              (progn ,@body)
                            (cond ,@rest))
                         next-state))
@@ -90,138 +106,153 @@
     ;; Process `if'.
 
     (`(if ,cond ,then . ,else)
-      (lcc--transform-1 cond
+      (lcr--transform-1 cond
                         (lambda (c)
                           `(if ,c
-                               ,(lcc--transform-1 then k)
-                             ,(lcc--transform-1 `(progn ,@else) k)))))
+                               ,(lcr--transform-1 then k)
+                             ,(lcr--transform-1 `(progn ,@else) k)))))
 
     ;; Process `progn' and `inline': they are identical except for the
     ;; name, which has some significance to the byte compiler.
 
-    (`(inline) (lcc--transform-1 nil k))
-    (`(inline ,form) (lcc--transform-1 form k))
+    (`(inline) (lcr--transform-1 nil k))
+    (`(inline ,form) (lcr--transform-1 form k))
     (`(inline ,form . ,rest)
-     (lcc--transform-1 form
-                       (lambda (_) (lcc--transform-1 `(inline ,@rest)
-                                         k))))
+     (lcr--transform-1
+      form
+      (lambda (_) (lcr--transform-1 `(inline ,@rest)
+                                    k))))
 
-    (`(progn) (lcc--transform-1 nil k))
-    (`(progn ,form) (lcc--transform-1 form k))
+    (`(progn) (lcr--transform-1 nil k))
+    (`(progn ,form) (lcr--transform-1 form k))
     (`(progn ,form . ,rest)
-     (lcc--transform-1 form
-                       (lambda (_) (lcc--transform-1 `(progn ,@rest)
-                                         k))))
+     (lcr--transform-1
+      form
+      (lambda (_) (lcr--transform-1 `(progn ,@rest)
+                                    k))))
 
+    ;; Process `let'.
     (`(let ,bindings . ,body)
-     (lcc--transform-n (-map #'cadr bindings)
-                       (lambda (xs) `(let ,(-zip-with 'list (-map #'car bindings) xs)
-                                       ,(lcc--transform-1 `(progn ,@body) k)))))
+     (lcr--transform-n
+      (-map #'cadr bindings)
+      (lambda (xs) `(let ,(-zip-with 'list (-map #'car bindings) xs)
+                      ,(lcr--transform-1 `(progn ,@body) k)))))
     (`(let* () . ,body)
-      (lcc--transform-1 `(progn ,@body) k))
+      (lcr--transform-1 `(progn ,@body) k))
     (`(let* ((,var ,value-form) . ,more-bindings) . ,body)
-        (lcc--transform-1
+        (lcr--transform-1
          value-form
-         (lambda (x) `(let* ((,var ,x)) ,(lcc--transform-1 `(let* ,more-bindings ,@body) k)))))
+         (lambda (x) `(let* ((,var ,x)) ,(lcr--transform-1 `(let* ,more-bindings ,@body) k)))))
     ;; Process `or'.
-    (`(or) (lcc--transform-1 'nil k))
-    (`(or ,condition) (lcc--transform-1 condition k))
+    (`(or) (lcr--transform-1 'nil k))
+    (`(or ,condition) (lcr--transform-1 condition k))
     (`(or ,condition . ,rest)
-      (lcc--transform-1 condition
+      (lcr--transform-1 condition
                         (lambda (x)
                           `(if ,x
                               ,(funcall k x)
-                            ,(lcc--transform-1
+                            ,(lcr--transform-1
                               `(or ,@rest) k)))))
     ;; Process `prog1'.
-    (`(prog1 ,first) (lcc--transform-1 first k))
+    (`(prog1 ,first) (lcr--transform-1 first k))
     (`(prog1 ,first . ,body)
-      (lcc--transform-1
-       first (lambda (x) (lcc--transform-1 `(progn ,@body) (lambda (_) (funcall k x))))))
+      (lcr--transform-1
+       first (lambda (x) (lcr--transform-1 `(progn ,@body) (lambda (_) (funcall k x))))))
     ;; Process `prog2'.
     (`(prog2 ,form1 ,form2 . ,body)
-      (lcc--transform-1 `(progn ,form1 (prog1 ,form2 ,@body)) k))
+      (lcr--transform-1 `(progn ,form1 (prog1 ,form2 ,@body)) k))
     ;; Process `while'.
     (`(while ,test . ,body)
      (let ((while-fun (cl-gensym "while")))
        ;; [while c body]k --> (flet (loop () [c]λx.(if x ([body]λy. (loop) (k nil))) )
-      ;; Open-code state addition instead of using cps--add-state: we
-      ;; need our states to be self-referential. (That's what makes the
-      ;; state a loop.)
        `(flet ((,while-fun ()
-                ,(lcc--transform-1
+                ,(lcr--transform-1
                   test
-                  (lambda (x) `(if ,x ,(lcc--transform-1 `(progn ,@body) (lambda (_) `(,while-fun))) ,(funcall k 'nil))))))
+                  (lambda (x) `(if ,x ,(lcr--transform-1 `(progn ,@body) (lambda (_) `(,while-fun))) ,(funcall k 'nil))))))
           (,while-fun))))
     ;; Process various kinds of `quote'.
     (`(quote ,arg) (funcall k `(quote ,arg)))
     (`(function ,arg) (funcall k `(function ,arg)))
-    (`(lcc-internal-call . (,fun . ,args))
+
+
+    ;; Process function calls
+    (`(with-current-buffer ,buffer . ,body)
+     
+     )
+    (`(lcr-call . (,fun . ,args))
      (let ((var (cl-gensym "v")))
-       (lcc--transform-1 fun (lambda (f)
-                               (lcc--transform-n args (lambda (xs)
-                                                        `((,fun ,@xs (lambda (,var) ,(funcall k var))))))))))
+       (lcr--transform-1 fun (lambda (f)
+                               (lcr--transform-n args (lambda (xs)
+                                                        `(,fun ,@xs (lambda (,var) ,(funcall k var)))))))))
+                                                        
     (`(,fun . ,args )
      (let ((var (cl-gensym "v")))
-       (lcc--transform-1 fun (lambda (f)
-                               (lcc--transform-n args (lambda (xs)
+       (lcr--transform-1 fun (lambda (f)
+                               (lcr--transform-n args (lambda (xs)
                                                         `(let ((,var (,fun ,@xs))) ,(funcall k var))))))))
-    ))
+    (`(form)
+     (error "Special form %S incorrect or not supported" form))))
 
 
-(lcc--transform-1 '(while c a) (lambda (x) x))
-(lcc--transform-1 '(quote quote) (lambda (x) x))
-(lcc--transform-1 '(f x y) (lambda (x) x))
+(lcr--transform-1 '(lcr-call f x y) (lambda (x) x))
+(lcr--transform-1 '(while c a) (lambda (x) x))
+(lcr--transform-1 '(quote quote) (lambda (x) x))
+(lcr--transform-1 '(f x y) (lambda (x) x))
+(lcr--transform-1 ''example (lambda (x) x))
+(lcr--transform-1 '(and a b) (lambda (x) x))
+(lcr--transform-1 '(progn (if a b c) d) (lambda (x) x))
+(lcr--transform-1 '(progn a b c d) (lambda (x) x))
+(lcr--transform-1 '(if a b c d) (lambda (x) x))
+(lcr--transform-1 '(if a (and e f) c d) (lambda (x) x))
+(lcr--transform-1 '(let () aowfutn) (lambda (x) x))
+(lcr--transform-1 '(let ((x yop)) (and a b)) (lambda (x) x))
+(lcr--transform-1 '(let* ((x yop)) (and a b)) (lambda (x) x))
+(lcr--transform-1 '(or) (lambda (x) x))
+(lcr--transform-1 '(or a) (lambda (x) x))
+(lcr--transform-1 '(or a b) (lambda (x) x))
+(lcr--transform-1 '(prog1 a b c) (lambda (x) x))
+(lcr--transform-1 '(prog2 a b c) (lambda (x) x))
+(lcr--transform-n '(x y z) (lambda (xs) xs))
+(lcr--transform-n '() (lambda (xs) xs))
+
+(defun lcr--context ()
+  "Make a copy of the resonably restorable context.
+This is useful for coming back to such a context after control
+comes back."
+  (point-marker))
+
+(defmacro lcr--with-context (ctx &rest body)
+  "Temporarily switch to CTX (if possible) and run BODY."
+  (declare (indent 2))
+  `(if (marker-buffer ,ctx)
+       (with-current-buffer (marker-buffer ,ctx)
+         (save-excursion (goto-char ,ctx)
+                         ,@body))
+     ,@body))
+
+(defun lcr-process-read (process continue)
+  "Asynchronously read from PROCESS and CONTINUE.
+The amount of data read is unknown.  This function should most
+certainly be called within a loop."
+  (when (process-filter process)
+    (error "Try to read from process (%s), but filter exists already! (%s)" process (process-filter process)))
+  (let ((ctx (lcr--context)))
+    (set-process-filter
+     process
+     (lambda (process string)
+       (set-process-filter process nil)
+       (lcr--with-context ctx
+           (funcall continue string))))))
+(put 'lcr-process-read 'lcr? t)
+
+(defun lcr-wait (secs continue)
+  "Wait SECS then CONTINUE."
+  (let ((ctx (lcr--context)))
+    (run-with-timer secs 'nil
+                    (lambda () (lcr--with-context ctx (funcall continue ())))
+                    ())))
+(put 'lcr-wait 'lcr? t)
 
 
-
-    
-    (`(function ,arg) (cps--add-state "function"
-                        `(setf ,cps--value-symbol (function ,arg)
-                               ,cps--state-symbol ,next-state)))
-
-    ;; Deal with `iter-yield'.
-
-    (`(lcc-internal-call ,fun . ,args )
-      (lcc--transform-1
-       value
-       (cps--add-state "iter-yield"
-         `(progn
-            (setf ,cps--state-symbol
-                  ,(if cps--cleanup-function
-                       (cps--add-state "after-yield"
-                         `(setf ,cps--state-symbol ,next-state))
-                       next-state))
-            (throw 'cps--yield ,cps--value-symbol)))))
-
-    ;; Catch any unhandled special forms.
-
-    ((and `(,name . ,_)
-          (guard (cps--special-form-p name))
-          (guard (not (memq name cps-standard-special-forms))))
-     name                               ; Shut up byte compiler
-     (error "special form %S incorrect or not supported" form))
-
-    ;; Process regular function applications with nontrivial
-    ;; parameters, converting them to applications of trivial
-    ;; let-bound parameters.
-
-    ((and `(,function . ,arguments)
-          (guard (not (cl-loop for argument in arguments
-                         always (atom argument)))))
-     (let ((argument-symbols
-            (cl-loop for argument in arguments
-               collect (if (atom argument)
-                           argument
-                         (cps--gensym "cps-argument-")))))
-
-       (lcc--transform-1
-        `(let* ,(cl-loop for argument in arguments
-                   for argument-symbol in argument-symbols
-                   unless (eq argument argument-symbol)
-                   collect (list argument-symbol argument))
-           ,(cons function argument-symbols))
-        next-state)))
-
-    ;; Process everything else by just evaluating the form normally.
-    (_ (cps--make-atomic-state form next-state))))
+(provide 'lcr)
+;;; lcr.el ends here
