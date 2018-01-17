@@ -15,20 +15,25 @@
   "Call the coroutine FUN with arguments ARGS."
   (error "`lcr-call' used outside a co-routine (%S %S)" fun args))
 
-(defvar lcr--yield-seen)
-(defconst lcr-inhibit-atomic-optimization t)
+(defconst lcr-inhibit-atomic-optimization nil)
+(defvar lcr-yield-seen nil)
 (defun lcr--atomic-p (form)
   "Return whether the given FORM never jumps to another coroutine."
   (and (not lcr-inhibit-atomic-optimization)
-       (let* ((lcr-yield-seen))
+       (let* ((lcr-yield-seen nil))
          (ignore (macroexpand-all
                   `(cl-macrolet ((lcr-call (fun &rest args) (setf lcr-yield-seen t)))
                      ,form)
                   macroexpand-all-environment))
          (not lcr-yield-seen))))
 
-(defmacro def-lcr (name arglist &rest body)
-  "Define a lightweight coroutine with NAME, ARGLIST and BODY."
+(defmacro deflcr (name arglist &rest body)
+  "Define a lightweight coroutine (lcr) with NAME, ARGLIST and BODY.
+The defined lcr is added an extra continuation argument and the
+body is translated to continuation-passing style automatically.
+Within an lcr, call another lcr using `lcr-call' (this will
+forward the continuation as expected).  From the outside, use
+`lcr-async-let' or call the lcr with an explicit continuation."
   (declare (indent 2))
   `(progn
      (put ,name 'lcr? t)
@@ -43,7 +48,11 @@ style (but only after EXPR returns)."
   (lcr--transform-1 expr `(lambda (,var) ,@body)))
 
 (defmacro lcr-async-let (bindings &rest body)
-"Expand multiple BINDINGS and call BODY as a continuation."
+"Expand multiple BINDINGS and call BODY as a continuation.
+Example:
+ (lcr-async-let ((x (lcr1 a b c))
+                 (y (lcr2 a b c x)))
+    (f x y))"
   (declare (indent 2))
   (pcase bindings
     (`((,vars ,expr)) `(lcr-async-bind ,vars ,expr ,@body))
@@ -69,8 +78,8 @@ style (but only after EXPR returns)."
   (pcase form
     ;; Process atomic expressions.
     ((guard (lcr--atomic-p form))
-     (let (x (cl-gensym "atom"))
-       `(let ((,x ,form)) ,(funcall k x))))
+     (let ((var (cl-gensym "atom")))
+       `(let ((,var ,form)) ,(funcall k var))))
 
     ((guard (atom form)) (funcall k form))
 
@@ -174,46 +183,44 @@ style (but only after EXPR returns)."
     (`(quote ,arg) (funcall k `(quote ,arg)))
     (`(function ,arg) (funcall k `(function ,arg)))
 
+    ;; Some not-really-special-but-special forms
+    (`(save-current-buffer . ,body)
+     (lcr--transform-1 `(let ((buf (current-buffer))) (prog1 (progn ,@body) (set-buffer buf))) k))
 
     ;; Process function calls
-    (`(with-current-buffer ,buffer . ,body)
-     
-     )
     (`(lcr-call . (,fun . ,args))
      (let ((var (cl-gensym "v")))
-       (lcr--transform-1 fun (lambda (f)
-                               (lcr--transform-n args (lambda (xs)
-                                                        `(,fun ,@xs (lambda (,var) ,(funcall k var)))))))))
-                                                        
+       (lcr--transform-n args (lambda (xs)
+                                `(,fun ,@xs (lambda (,var) ,(funcall k var)))))))
     (`(,fun . ,args )
      (let ((var (cl-gensym "v")))
-       (lcr--transform-1 fun (lambda (f)
-                               (lcr--transform-n args (lambda (xs)
-                                                        `(let ((,var (,fun ,@xs))) ,(funcall k var))))))))
+       (lcr--transform-n args (lambda (xs)
+                                `(let ((,var (,fun ,@xs))) ,(funcall k var))))))
     (`(form)
      (error "Special form %S incorrect or not supported" form))))
 
-
-(lcr--transform-1 '(lcr-call f x y) (lambda (x) x))
-(lcr--transform-1 '(while c a) (lambda (x) x))
-(lcr--transform-1 '(quote quote) (lambda (x) x))
-(lcr--transform-1 '(f x y) (lambda (x) x))
-(lcr--transform-1 ''example (lambda (x) x))
-(lcr--transform-1 '(and a b) (lambda (x) x))
-(lcr--transform-1 '(progn (if a b c) d) (lambda (x) x))
-(lcr--transform-1 '(progn a b c d) (lambda (x) x))
-(lcr--transform-1 '(if a b c d) (lambda (x) x))
-(lcr--transform-1 '(if a (and e f) c d) (lambda (x) x))
-(lcr--transform-1 '(let () aowfutn) (lambda (x) x))
-(lcr--transform-1 '(let ((x yop)) (and a b)) (lambda (x) x))
-(lcr--transform-1 '(let* ((x yop)) (and a b)) (lambda (x) x))
-(lcr--transform-1 '(or) (lambda (x) x))
-(lcr--transform-1 '(or a) (lambda (x) x))
-(lcr--transform-1 '(or a b) (lambda (x) x))
-(lcr--transform-1 '(prog1 a b c) (lambda (x) x))
-(lcr--transform-1 '(prog2 a b c) (lambda (x) x))
-(lcr--transform-n '(x y z) (lambda (xs) xs))
-(lcr--transform-n '() (lambda (xs) xs))
+;; (lcr--transform-1 '(lcr-call f x y) (lambda (x) x))
+;; (lcr--transform-1 '(lcr-call f (g x y) z) (lambda (x) x))
+;; (lcr--transform-1 '(lcr-call f (lcr-call g x y) z) (lambda (x) x))
+;; (lcr--transform-1 '(while c a) (lambda (x) x))
+;; (lcr--transform-1 '(quote quote) (lambda (x) x))
+;; (lcr--transform-1 '(f x y) (lambda (x) x))
+;; (lcr--transform-1 ''example (lambda (x) x))
+;; (lcr--transform-1 '(and a b) (lambda (x) x))
+;; (lcr--transform-1 '(progn (if a b c) d) (lambda (x) x))
+;; (lcr--transform-1 '(progn a b c d) (lambda (x) x))
+;; (lcr--transform-1 '(if a b c d) (lambda (x) x))
+;; (lcr--transform-1 '(if a (and e f) c d) (lambda (x) x))
+;; (lcr--transform-1 '(let () aowfutn) (lambda (x) x))
+;; (lcr--transform-1 '(let ((x yop)) (and a b)) (lambda (x) x))
+;; (lcr--transform-1 '(let* ((x yop)) (and a b)) (lambda (x) x))
+;; (lcr--transform-1 '(or) (lambda (x) x))
+;; (lcr--transform-1 '(or a) (lambda (x) x))
+;; (lcr--transform-1 '(or a b) (lambda (x) x))
+;; (lcr--transform-1 '(prog1 a b c) (lambda (x) x))
+;; (lcr--transform-1 '(prog2 a b c) (lambda (x) x))
+;; (lcr--transform-n '(x y z) (lambda (xs) xs))
+;; (lcr--transform-n '() (lambda (xs) xs))
 
 (defun lcr--context ()
   "Make a copy of the resonably restorable context.
@@ -226,16 +233,18 @@ comes back."
   (declare (indent 2))
   `(if (marker-buffer ,ctx)
        (with-current-buffer (marker-buffer ,ctx)
-         (save-excursion (goto-char ,ctx)
-                         ,@body))
+         (save-excursion
+           (goto-char ,ctx)
+           ,@body))
      ,@body))
 
 (defun lcr-process-read (process continue)
   "Asynchronously read from PROCESS and CONTINUE.
 The amount of data read is unknown.  This function should most
-certainly be called within a loop."
+certainly be called within a loop.
+This function should be used as a lightweight coroutine, see `deflcr'."
   (when (process-filter process)
-    (error "Try to read from process (%s), but filter exists already! (%s)" process (process-filter process)))
+    (error "Try to read from process (%s), but a filter is already installed (%s)" process (process-filter process)))
   (let ((ctx (lcr--context)))
     (set-process-filter
      process
@@ -246,13 +255,44 @@ certainly be called within a loop."
 (put 'lcr-process-read 'lcr? t)
 
 (defun lcr-wait (secs continue)
-  "Wait SECS then CONTINUE."
+  "Wait SECS then CONTINUE.
+This function should be used as a lightweight coroutine, see `deflcr'."
   (let ((ctx (lcr--context)))
     (run-with-timer secs 'nil
                     (lambda () (lcr--with-context ctx (funcall continue ())))
                     ())))
 (put 'lcr-wait 'lcr? t)
 
+(macroexpand-all '(deflcr dll (acc err-msgs)
+  "Parse the output of load command.
+ACC umulate input and ERR-MSGS.  When done call (CONT status error-messages loaded-modules)."
+  (setq dante-state 'loading)
+  (let* ((success "^Ok, modules loaded:[ ]*\\([^\n ]*\\)\\( (.*)\\)?\.")
+         (progress "^\\[\\([0-9]*\\) of \\([0-9]*\\)\\] Compiling \\([^ ]*\\).*")
+         (i (string-match (s-join "\\|" (list dante-ghci-prompt success dante-err-regexp progress)) acc))
+         (m (when i (match-string 0 acc)))
+         (rest (when i (substring acc (match-end 0)))))
+    (cond ((and m (string-match dante-ghci-prompt m))
+           (setq dante-state 'ghc-reports-error)
+           (list 'failed (nreverse err-msgs) (match-string 1 m)))
+          ((and m (string-match progress m))
+           (setq dante-state (list 'compiling (match-string 3 m)))
+           (lcr-call dll rest err-msgs))
+          ((and m (string-match success m))
+           ;; With the +c setting, GHC (8.2) prints: 1. error
+           ;; messages+warnings, if compiling only 2. if successful,
+           ;; repeat the warnings
+           (pcase (lcr-call dll rest nil)
+             (`(,_status ,warning-msgs ,loaded-mods)
+              (setq dante-state (list 'loaded loaded-mods))
+              (list 'ok (or (nreverse err-msgs) warning-msgs) loaded-mods))))
+          ((and m (> (length rest) 0) (/= (elt rest 0) ? )) ;; make sure we're matching a full error message
+           (lcr-call dll rest (cons m err-msgs) cont))
+          (t (lcr-call dll (concat acc (dante-async-read)) err-msgs))))))
+
+(macroexpand-all '(deflcr dll (acc err-msgs)
+           (pcase (lcr-call dll)
+             (`(,_status ,warning-msgs ,loaded-mods) t))))
 
 (provide 'lcr)
 ;;; lcr.el ends here
