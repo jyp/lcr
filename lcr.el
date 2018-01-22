@@ -75,11 +75,14 @@ Example:
 ;; see cps--transform-1 for all possible forms.
 (defun lcr--transform-1 (form k)
   "Transform FORM and pass the result to K."
+  (message "Transforming: %S" form)
   (pcase form
     ;; Process atomic expressions.
     ((guard (lcr--atomic-p form))
-     (let ((var (cl-gensym "atom")))
-       `(let ((,var ,form)) ,(funcall k var))))
+     (funcall k form))
+    ;; ((guard (lcr--atomic-p form))
+    ;;  (let ((var (cl-gensym "atom")))
+    ;;    `(let ((,var ,form)) ,(funcall k var))))
 
     ((guard (atom form)) (funcall k form))
 
@@ -141,6 +144,10 @@ Example:
                                     k))))
 
     ;; Process `let'.
+    ((and `(let ,vars . ,body) (guard (-all? 'atom vars)))
+     `(let ,@vars (lcr--transform-1 `(progn ,@body) k)))
+    ((and `(let* ,vars . ,body) (guard (-all? 'atom vars)))
+     `(let ,@vars (lcr--transform-1 `(progn ,@body) k)))
     (`(let ,bindings . ,body)
      (lcr--transform-n
       (-map #'cadr bindings)
@@ -238,61 +245,64 @@ comes back."
            ,@body))
      ,@body))
 
+(defmacro lcr--context-switch (&rest body)
+  "Save the current context, to restore it in a continuation.
+The current continuation is passed as CONT and can be called
+within a BODY by using the macro `lcr-resume'.  The operations
+performed here correspond to a context-switch in operating-system
+parlance."
+  (declare (indent 2))
+  `(let ((ctx (lcr--context)))
+     (cl-macrolet ((lcr-resume (cont &rest args)
+                                 `(lcr--with-context
+                                   ctx
+                                   (funcall ,cont ,@args))))
+       (progn ,@body))))
+
 (defun lcr-process-read (process continue)
   "Asynchronously read from PROCESS and CONTINUE.
 The amount of data read is unknown.  This function should most
 certainly be called within a loop.
-This function should be used as a lightweight coroutine, see `deflcr'."
+This function is a lightweight coroutine, see `deflcr'."
   (when (process-filter process)
     (error "Try to read from process (%s), but a filter is already installed (%s)" process (process-filter process)))
-  (let ((ctx (lcr--context)))
+  (lcr--context-switch
     (set-process-filter
      process
      (lambda (process string)
        (set-process-filter process nil)
-       (lcr--with-context ctx
-           (funcall continue string))))))
-(put 'lcr-process-read 'lcr? t)
+       (lcr-resume continue string)))))
 
 (defun lcr-wait (secs continue)
   "Wait SECS then CONTINUE.
-This function should be used as a lightweight coroutine, see `deflcr'."
-  (let ((ctx (lcr--context)))
-    (run-with-timer secs 'nil
-                    (lambda () (lcr--with-context ctx (funcall continue ())))
-                    ())))
-(put 'lcr-wait 'lcr? t)
+This function is a lightweight coroutine, see `deflcr'."
+  (lcr--context-switch
+      (run-with-timer secs 'nil
+                      (lambda () (lcr-resume continue ()))
+                      ())))
 
-(macroexpand-all '(deflcr dll (acc err-msgs)
-  "Parse the output of load command.
-ACC umulate input and ERR-MSGS.  When done call (CONT status error-messages loaded-modules)."
-  (setq dante-state 'loading)
-  (let* ((success "^Ok, modules loaded:[ ]*\\([^\n ]*\\)\\( (.*)\\)?\.")
-         (progress "^\\[\\([0-9]*\\) of \\([0-9]*\\)\\] Compiling \\([^ ]*\\).*")
-         (i (string-match (s-join "\\|" (list dante-ghci-prompt success dante-err-regexp progress)) acc))
-         (m (when i (match-string 0 acc)))
-         (rest (when i (substring acc (match-end 0)))))
-    (cond ((and m (string-match dante-ghci-prompt m))
-           (setq dante-state 'ghc-reports-error)
-           (list 'failed (nreverse err-msgs) (match-string 1 m)))
-          ((and m (string-match progress m))
-           (setq dante-state (list 'compiling (match-string 3 m)))
-           (lcr-call dll rest err-msgs))
-          ((and m (string-match success m))
-           ;; With the +c setting, GHC (8.2) prints: 1. error
-           ;; messages+warnings, if compiling only 2. if successful,
-           ;; repeat the warnings
-           (pcase (lcr-call dll rest nil)
-             (`(,_status ,warning-msgs ,loaded-mods)
-              (setq dante-state (list 'loaded loaded-mods))
-              (list 'ok (or (nreverse err-msgs) warning-msgs) loaded-mods))))
-          ((and m (> (length rest) 0) (/= (elt rest 0) ? )) ;; make sure we're matching a full error message
-           (lcr-call dll rest (cons m err-msgs) cont))
-          (t (lcr-call dll (concat acc (dante-async-read)) err-msgs))))))
+(defun lcr-sema-new ()
+  "Create a new semaphore structure."
+  (list t nil))
 
-(macroexpand-all '(deflcr dll (acc err-msgs)
-           (pcase (lcr-call dll)
-             (`(,_status ,warning-msgs ,loaded-mods) t))))
+(defalias 'lcr-sema-free? 'car "Is the semaphore free?")
+(defalias 'lcr-sema-queue 'cadr "The semaphore's queue.")
+
+(defun lcr-sema-get (sema continue)
+  "Get (exclusive) access to the semaphore SEMA, then CONTINUE.
+This function is a lightweight coroutine."
+  (if (lcr-sema-free? sema)
+      (setf (lcr-sema-free? sema) nil)
+    (lcr--context-switch
+        (push (lambda () (lcr-resume continue ()))
+              (lcr-sema-queue)))))
+
+(defun lcr-sema-put (sema)
+"Release the semaphore SEMA.
+This will run *synchronously* the next process waiting for it."
+  (let ((next-process (pop (lcr-sema-queue sema))))
+    (if next-process (funcall next-process ())
+      (setf (lcr-sema-free? sema) t))))
 
 (provide 'lcr)
 ;;; lcr.el ends here
