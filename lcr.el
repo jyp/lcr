@@ -1,4 +1,4 @@
-;;; lcr.el  -*- lexical-binding: t -*-
+;; lcr.el --- lightweight coroutines  -*- lexical-binding: t -*-
 
 ;; Lightweight coroutines.
 
@@ -8,6 +8,21 @@
 ;; <dancol@dancol.org> on generators.
 
 (require 'dash)
+
+;;; Commentary:
+
+;; A lightweight coroutine (or `lcr' for short) is a function which
+;; does not return its result directly, but instead pases it to an
+;; extra continuation argument (often called 'continue' or 'cont').
+;;
+;; This allows inversion of control to take place: the continuation
+;; may be called by a callback installed by the lcr.
+;;
+;; The code that uses lcr's need to be written in so-called
+;; continuation-passing style (cps).  This module provides:
+;;
+;; - marcros which can rewrite code into cps
+;; - basic lcr's to read from processes, wait, etc.
 
 ;;; Code:
 
@@ -57,6 +72,23 @@ Example:
   (pcase bindings
     (`((,vars ,expr)) `(lcr-async-bind ,vars ,expr ,@body))
     (`((,vars ,expr) . ,rest) `(lcr-async-bind ,vars ,expr (lcr-async-let ,rest ,@body)))))
+
+(defmacro lcr-cps-bind (vars expr &rest body)
+  "Bind VARS in a continuation passed to EXPR with contents BODY.
+So (lcr-cps-bind x (fun arg) body) expands to (fun arg (λ (x) body))"
+  (declare (indent 2))
+  (if (listp vars)
+      `(,@expr (lambda ,vars ,@body))
+  `(,@expr (lambda (,vars) ,@body))))
+
+(defmacro lcr-cps-let (bindings &rest body)
+"Expand multiple BINDINGS and call BODY as a continuation.
+Example: (lcr-cps-let ((x (fun1 arg1)) (y z (fun2 arg2))) body)
+expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
+  (declare (indent 1))
+  (pcase bindings
+    (`((,vars ,expr)) `(lcr-cps-bind ,vars ,expr ,@body))
+    (`((,vars ,expr) . ,rest) `(lcr-cps-bind ,vars ,expr (lcr-cps-let ,rest ,@body)))))
 
 
 (defun lcr--transform-body (forms k)
@@ -192,6 +224,8 @@ Example:
 
     ;; Some not-really-special-but-special forms
     (`(save-current-buffer . ,body)
+     ;; we should do this because the buffer should be restored in the
+     ;; continuation, not right now.
      (lcr--transform-1 `(let ((buf (current-buffer))) (prog1 (progn ,@body) (set-buffer buf))) k))
 
     ;; Process function calls
@@ -245,7 +279,7 @@ comes back."
            ,@body))
      ,@body))
 
-(defmacro lcr--context-switch (&rest body)
+(defmacro lcr-context-switch (&rest body)
   "Save the current context, to restore it in a continuation.
 The current continuation is passed as CONT and can be called
 within a BODY by using the macro `lcr-resume'.  The operations
@@ -266,7 +300,7 @@ certainly be called within a loop.
 This function is a lightweight coroutine, see `deflcr'."
   (when (process-filter process)
     (error "Try to read from process (%s), but a filter is already installed (%s)" process (process-filter process)))
-  (lcr--context-switch
+  (lcr-context-switch
     (set-process-filter
      process
      (lambda (process string)
@@ -276,33 +310,43 @@ This function is a lightweight coroutine, see `deflcr'."
 (defun lcr-wait (secs continue)
   "Wait SECS then CONTINUE.
 This function is a lightweight coroutine, see `deflcr'."
-  (lcr--context-switch
+  (lcr-context-switch
       (run-with-timer secs 'nil
                       (lambda () (lcr-resume continue ()))
                       ())))
 
-(defun lcr-sema-new ()
-  "Create a new semaphore structure."
-  (list t nil))
+;; (defun lcr-sema-new ()
+;;   "Create a new semaphore structure."
+;;   (list t nil))
 
-(defalias 'lcr-sema-free? 'car "Is the semaphore free?")
-(defalias 'lcr-sema-queue 'cadr "The semaphore's queue.")
+;; (defalias 'lcr-sema-free? 'car "Is the semaphore free?")
+;; (defalias 'lcr-sema-queue 'cadr "The semaphore's queue.")
 
-(defun lcr-sema-get (sema continue)
-  "Get (exclusive) access to the semaphore SEMA, then CONTINUE.
-This function is a lightweight coroutine."
-  (if (lcr-sema-free? sema)
-      (setf (lcr-sema-free? sema) nil)
-    (lcr--context-switch
-        (push (lambda () (lcr-resume continue ()))
-              (lcr-sema-queue)))))
+;; (defun lcr-sema-get (sema continue)
+;;   "Get (exclusive) access to the semaphore SEMA, then CONTINUE.
+;; This function is a lightweight coroutine."
+;;   (if (lcr-sema-free? sema)
+;;       (setf (lcr-sema-free? sema) nil)
+;;     (lcr-context-switch
+;;         (push (lambda () (lcr-resume continue ()))
+;;               (lcr-sema-queue)))))
 
-(defun lcr-sema-put (sema)
-"Release the semaphore SEMA.
-This will run *synchronously* the next process waiting for it."
-  (let ((next-process (pop (lcr-sema-queue sema))))
-    (if next-process (funcall next-process ())
-      (setf (lcr-sema-free? sema) t))))
+;; (defun lcr-sema-put (sema)
+;; "Release the semaphore SEMA.
+;; This will run *synchronously* the next process waiting for it."
+;;   (let ((next-process (pop (lcr-sema-queue sema))))
+;;     (if next-process (funcall next-process ())
+;;       (setf (lcr-sema-free? sema) t))))
+
+(defun lcr-blocking-call (cont)
+  "Call CONT as (CONT K) and block until (K res) is called, then return res."
+  (let ((result nil))
+    (funcall cont (lambda (reply) (setq result (list reply))))
+    ;; use a list so that even 'nil' will be detected as a result.
+    (while (not result) (sleep-for 0.01))
+    (car result)))
+
+
 
 (provide 'lcr)
 ;;; lcr.el ends here
