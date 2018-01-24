@@ -50,10 +50,12 @@ Within an lcr, call another lcr using `lcr-call' (this will
 forward the continuation as expected).  From the outside, use
 `lcr-async-let' or call the lcr with an explicit continuation."
   (declare (indent 2))
-  `(progn
-     (put ,name 'lcr? t)
-     (defun ,name ,(-snoc  arglist 'lcr--continuation)
-       ,(lcr--transform-1 `(progn ,@body) (lambda (x) `(funcall lcr--continuation ,x))))))
+  (let ((exp-body (macroexpand-all `(progn ,@body) macroexpand-all-environment)))
+    ;; expand all macros so lcr--transform-1 only has to deal with basic constructs.
+    `(progn
+       (put (quote ,name) 'lcr? t)
+       (defun ,name ,(-snoc  arglist 'lcr--continuation)
+         ,(lcr--transform-1 exp-body (lambda (x) `(funcall lcr--continuation ,x)))))))
 
 (defmacro lcr-async-bind (var expr &rest body)
   "Bind VAR in a continuation passed to EXPR with contents BODY.
@@ -109,14 +111,15 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
   "Transform FORM and pass the result to K."
   (message "Transforming: %S" form)
   (pcase form
-    ;; Process atomic expressions.
-    ((guard (lcr--atomic-p form))
-     (funcall k form))
-    ;; ((guard (lcr--atomic-p form))
-    ;;  (let ((var (cl-gensym "atom")))
-    ;;    `(let ((,var ,form)) ,(funcall k var))))
-
+    ;; must leave atoms unchanged (e.g. so that variables can be assigned)
     ((guard (atom form)) (funcall k form))
+    ;; ((guard (lcr--atomic-p form))
+    ;;  (funcall k form)) ;; won't work because k is not guaranteed to eval its argument.
+
+    ((guard (lcr--atomic-p form))
+     (let ((var (cl-gensym "atom")))
+       `(let ((,var ,form)) ,(funcall k var))))
+
 
     ;; Process `and'.
     (`(and) (funcall k 't))
@@ -213,11 +216,14 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
     (`(while ,test . ,body)
      (let ((while-fun (cl-gensym "while")))
        ;; [while c body]k --> (flet (loop () [c]λx.(if x ([body]λy. (loop) (k nil))) )
-       `(flet ((,while-fun ()
-                ,(lcr--transform-1
-                  test
-                  (lambda (x) `(if ,x ,(lcr--transform-1 `(progn ,@body) (lambda (_) `(,while-fun))) ,(funcall k 'nil))))))
-          (,while-fun))))
+       `(let (,while-fun)
+          (setq ,while-fun (lambda ()
+                             ,(lcr--transform-1
+                               test
+                               (lambda (x) `(if ,x
+                                                ,(lcr--transform-1 `(progn ,@body) (lambda (_) `(funcall ,while-fun)))
+                                              ,(funcall k 'nil))))))
+          (funcall ,while-fun))))
     ;; Process various kinds of `quote'.
     (`(quote ,arg) (funcall k `(quote ,arg)))
     (`(function ,arg) (funcall k `(function ,arg)))
