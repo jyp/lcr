@@ -4,6 +4,13 @@
 
 ;;; Copyright (C) 2018 Jean-Philippe Bernardy.
 
+;; Author: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
+;; Maintainer: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
+;; URL: https://github.com/jyp/lcr
+;; Created: Januray 2018
+;; Keywords: tools
+;; Package-Requires: ((dash "2.13.0") (emacs "25.1"))
+
 ;; With parts copied from the work of Daniel Colascione
 ;; <dancol@dancol.org> on generators.
 
@@ -12,7 +19,7 @@
 ;;; Commentary:
 
 ;; A lightweight coroutine (or `lcr' for short) is a function which
-;; does not return its result directly, but instead pases it to an
+;; does not return its result directly, but instead passes it to an
 ;; extra continuation argument (often called 'continue' or 'cont').
 ;;
 ;; This allows inversion of control to take place: the continuation
@@ -21,8 +28,13 @@
 ;; The code that uses lcr's need to be written in so-called
 ;; continuation-passing style (cps).  This module provides:
 ;;
-;; - marcros which can rewrite code into cps
+;; - marcros which can translated direct-style code into cps
 ;; - basic lcr's to read from processes, wait, etc.
+;;
+;; Why using this module instead of concurrency support?
+;; - for better control over context switch and/or scheduling
+;; - for versions of emacs which did not provide concurrency
+
 
 ;;; Code:
 
@@ -49,7 +61,7 @@ body is translated to continuation-passing style automatically.
 Within an lcr, call another lcr using `lcr-call' (this will
 forward the continuation as expected).  From the outside, use
 `lcr-async-let' or call the lcr with an explicit continuation."
-  (declare (indent 2))
+  (declare (doc-string 3) (indent 2))
   (let ((exp-body (macroexpand-all `(progn ,@body) macroexpand-all-environment)))
     ;; expand all macros so lcr--transform-1 only has to deal with basic constructs.
     `(progn
@@ -92,7 +104,6 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
     (`((,vars ,expr)) `(lcr-cps-bind ,vars ,expr ,@body))
     (`((,vars ,expr) . ,rest) `(lcr-cps-bind ,vars ,expr (lcr-cps-let ,rest ,@body)))))
 
-
 (defun lcr--transform-body (forms k)
   "Transform FORMS and pass the result of the last form to K."
   (lcr--transform-1 `(progn ,@forms) k))
@@ -106,10 +117,10 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
       form
       (lambda (x) (lcr--transform-n rest (lambda (xs) (funcall k (cons x xs)))))))))
 
-;; see cps--transform-1 for all possible forms.
+;; see cps--transform-1 in generators for all possible forms.
 (defun lcr--transform-1 (form k)
   "Transform FORM and pass the result to K."
-  (message "Transforming: %S" form)
+  ;; (message "Transforming: %S" form)
   (pcase form
     ;; must leave atoms unchanged (e.g. so that variables can be assigned)
     ((guard (atom form)) (funcall k form))
@@ -119,7 +130,6 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
     ((guard (lcr--atomic-p form))
      (let ((var (cl-gensym "atom")))
        `(let ((,var ,form)) ,(funcall k var))))
-
 
     ;; Process `and'.
     (`(and) (funcall k 't))
@@ -179,17 +189,19 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
                                     k))))
 
     ;; Process `let'.
+    (`(let () . ,body)
+      (lcr--transform-1 `(progn ,@body) k))
+    (`(let* () . ,body)
+      (lcr--transform-1 `(progn ,@body) k))
     ((and `(let ,vars . ,body) (guard (-all? 'atom vars)))
-     `(let ,@vars (lcr--transform-1 `(progn ,@body) k)))
+     `(let ,@vars ,(lcr--transform-1 `(progn ,@body) k)))
     ((and `(let* ,vars . ,body) (guard (-all? 'atom vars)))
-     `(let ,@vars (lcr--transform-1 `(progn ,@body) k)))
+     `(let ,@vars ,(lcr--transform-1 `(progn ,@body) k)))
     (`(let ,bindings . ,body)
      (lcr--transform-n
       (-map #'cadr bindings)
       (lambda (xs) `(let ,(-zip-with 'list (-map #'car bindings) xs)
                       ,(lcr--transform-1 `(progn ,@body) k)))))
-    (`(let* () . ,body)
-      (lcr--transform-1 `(progn ,@body) k))
     (`(let* ((,var ,value-form) . ,more-bindings) . ,body)
         (lcr--transform-1
          value-form
@@ -246,6 +258,7 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
     (`(form)
      (error "Special form %S incorrect or not supported" form))))
 
+;; Tests:
 ;; (lcr--transform-1 '(lcr-call f x y) (lambda (x) x))
 ;; (lcr--transform-1 '(lcr-call f (g x y) z) (lambda (x) x))
 ;; (lcr--transform-1 '(lcr-call f (lcr-call g x y) z) (lambda (x) x))
@@ -301,9 +314,9 @@ parlance."
 
 (defun lcr-process-read (process continue)
   "Asynchronously read from PROCESS and CONTINUE.
-The amount of data read is unknown.  This function should most
-certainly be called within a loop.
-This function is a lightweight coroutine, see `deflcr'."
+The amount of data read is unknown, so this function should most
+certainly be called within a loop.  This function is a
+lightweight coroutine, see `lcr'."
   (when (process-filter process)
     (error "Try to read from process (%s), but a filter is already installed (%s)" process (process-filter process)))
   (lcr-context-switch
@@ -315,7 +328,7 @@ This function is a lightweight coroutine, see `deflcr'."
 
 (defun lcr-wait (secs continue)
   "Wait SECS then CONTINUE.
-This function is a lightweight coroutine, see `deflcr'."
+This function is a lightweight coroutine, see `lcr'."
   (lcr-context-switch
       (run-with-timer secs 'nil
                       (lambda () (lcr-resume continue ()))
@@ -351,8 +364,6 @@ This function is a lightweight coroutine, see `deflcr'."
     ;; use a list so that even 'nil' will be detected as a result.
     (while (not result) (sleep-for 0.01))
     (car result)))
-
-
 
 (provide 'lcr)
 ;;; lcr.el ends here
