@@ -1,20 +1,17 @@
-;; lcr.el --- lightweight coroutines  -*- lexical-binding: t -*-
+;;; lcr.el --- lightweight coroutines  -*- lexical-binding: t -*-
 
-;; Lightweight coroutines.
-
-;;; Copyright (C) 2018 Jean-Philippe Bernardy.
+;; Copyright (C) 2018 Jean-Philippe Bernardy.
 
 ;; Author: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
 ;; Maintainer: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
 ;; URL: https://github.com/jyp/lcr
-;; Created: Januray 2018
+;; Created: January 2018
+;; Version: 0.9
 ;; Keywords: tools
-;; Package-Requires: ((dash "2.13.0") (emacs "25.1"))
+;; Package-Requires: ((dash "2.12.0") (emacs "25.1"))
 
 ;; With parts copied from the work of Daniel Colascione
 ;; <dancol@dancol.org> on generators.
-
-(require 'dash)
 
 ;;; Commentary:
 
@@ -33,10 +30,12 @@
 ;;
 ;; Why using this module instead of concurrency support?
 ;; - for better control over context switch and/or scheduling
-;; - for versions of emacs which did not provide concurrency
+;; - for versions of Emacs which did not provide concurrency
 
 
 ;;; Code:
+
+(require 'dash)
 
 (defun lcr-call (fun &rest args)
   "Call the coroutine FUN with arguments ARGS."
@@ -54,7 +53,7 @@
                   macroexpand-all-environment))
          (not lcr-yield-seen))))
 
-(defmacro deflcr (name arglist &rest body)
+(defmacro lcr-def (name arglist &rest body)
   "Define a lightweight coroutine (lcr) with NAME, ARGLIST and BODY.
 The defined lcr is added an extra continuation argument and the
 body is translated to continuation-passing style automatically.
