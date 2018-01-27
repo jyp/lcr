@@ -15,22 +15,27 @@
 
 ;;; Commentary:
 
-;; A lightweight coroutine (or `lcr' for short) is a function which
-;; does not return its result directly, but instead passes it to an
-;; extra continuation argument (often called 'continue' or 'cont').
+;; We call a lightweight coroutine (or `lcr' for short) a function
+;; which does not return its result directly, but instead passes it to
+;; an extra *continuation* argument (often called 'continue' or
+;; 'cont').  Codinig with explicit contination arguments is a
+;; well-known technique, called continuation-passing style (CPS).
 ;;
-;; This allows inversion of control to take place: the continuation
-;; may be called by a callback installed by the lcr.
+;; CPS allows inversion of control to take place.  Indeed the
+;; continuation may be installed as a callback, rather than being
+;; called directly.  In general, any CPS function may yield control,
+;; and thus implement a lightweight form of concurrency.
 ;;
-;; The code that uses lcr's need to be written in so-called
-;; continuation-passing style (cps).  This module provides:
+;; This module
+;; provides:
 ;;
-;; - marcros which can translated direct-style code into cps
-;; - basic lcr's to read from processes, wait, etc.
+;; - marcros which can translate direct-style code into cps
+;; - a library of lcr's to read from processes, wait some time, etc.
 ;;
-;; Why using this module instead of concurrency support?
+;; Why use this module, instead of Emacs' built-in concurrency support?
+;;
 ;; - for better control over context switch and/or scheduling
-;; - for versions of Emacs which did not provide concurrency
+;; - for versions of Emacs which do not provide concurrency
 
 
 ;;; Code:
