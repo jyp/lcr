@@ -6,7 +6,7 @@
 ;; Maintainer: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
 ;; URL: https://github.com/jyp/lcr
 ;; Created: January 2018
-;; Version: 0.9
+;; Version: 1.0
 ;; Keywords: tools
 ;; Package-Requires: ((dash "2.12.0") (emacs "25.1"))
 
