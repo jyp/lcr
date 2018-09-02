@@ -6,7 +6,7 @@
 ;; Maintainer: Jean-Philippe Bernardy <jeanphilippe.bernardy@gmail.com>
 ;; URL: https://github.com/jyp/lcr
 ;; Created: January 2018
-;; Version: 1.0
+;; Version: 1.1
 ;; Keywords: tools
 ;; Package-Requires: ((dash "2.12.0") (emacs "25.1"))
 
@@ -402,8 +402,8 @@ function is a lightweight coroutine, see `lcr'."
 This function is a lightweight coroutine, see `lcr'."
   (lcr-context-switch
       (run-with-timer secs 'nil
-                      (lambda () (lcr-resume continue ()))
-                      ())))
+                      (lambda ()
+                        (lcr-resume continue ())))))
 
 ;; (defun lcr-sema-new ()
 ;;   "Create a new semaphore structure."
