@@ -56,6 +56,7 @@
 ;;; Code:
 
 (require 'dash)
+(require 'cl-macs)
 
 (defun lcr-call (fun &rest args)
   "Call the coroutine FUN with arguments ARGS."
