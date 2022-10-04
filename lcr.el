@@ -350,7 +350,11 @@ main loop."
 The current continuation is passed as CONT and can be called
 within a BODY by using the macro `lcr-resume'.  The operations
 performed here correspond to a context-switch in operating-system
-parlance.  After BODY is run `lcr-scheduler' is called."
+parlance.  After BODY is run `lcr-scheduler' is called.
+
+This macro must be used every time a continuation isn't run right
+away, but rather is stored in a data structure for running later,
+be it a timer, waiting on a process, etc."
   (declare (indent 2))
   `(let ((ctx (lcr--context)))
      (cl-macrolet ((lcr-resume (cont &rest args)
