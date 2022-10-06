@@ -341,7 +341,8 @@ main loop."
       (setq lcr-ready-in nil))
     (let ((next-process (pop lcr-ready-out)))
       ;; (message "lcr-scheduler running... %s ready" (+ (length lcr-ready-in) (length lcr-ready-out)))
-      (funcall next-process))))
+      (funcall next-process)))
+  (run-hooks 'lcr-context-switch-hook))
 
 (defmacro lcr-context-switch (&rest body)
   "Save the current context, to restore it in a continuation.
@@ -356,16 +357,15 @@ contiuation will be restored.  performed here correspond to a
 context-switch in operating-system parlance.  After BODY is run,
 `lcr-scheduler' is called.  Indeed, the purpose of storing a
 continuation to run later is precisely to switch control to
-another green process, or return to the Emacs main loop.
-"
-  (declare (indent 2))
+another green process, or return to the Emacs main loop."
+  (declare (indent 0))
   `(let ((ctx (lcr--context)))
      (cl-macrolet ((lcr-resume (cont &rest args)
-                                 `(lcr--with-context
-                                   ctx
-                                   (funcall ,cont ,@args))))
+                               `(lcr--with-context ctx
+                                  (funcall ,cont ,@args))))
        (progn ,@body
-              (run-hooks 'lcr-context-switch-hook)
+              ;; at this point the green thread (cont) is waiting. So
+              ;; schedule something else.
               (lcr-scheduler)))))
 
 (defvar-local lcr-process-callback nil "Callback used by `lcr-process-read'.")
@@ -408,8 +408,7 @@ function is a lightweight coroutine, see `lcr'."
 (defun lcr-yield (cont)
   "Enqueue the ready process CONT."
   (lcr-context-switch
-    (push (lambda () (lcr-resume cont)) lcr-ready-in))
-  (lcr-scheduler))
+    (push (lambda () (lcr-resume cont)) lcr-ready-in)))
 
 (defun lcr-wait (secs continue)
   "Wait SECS then CONTINUE.
