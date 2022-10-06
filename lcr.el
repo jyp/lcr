@@ -310,7 +310,7 @@ comes back."
 
 (defmacro lcr--with-context (ctx &rest body)
   "Temporarily switch to CTX (if possible) and run BODY."
-  (declare (indent 2))
+  (declare (indent 1))
   `(save-current-buffer
      (when (marker-buffer ,ctx) (set-buffer (marker-buffer ,ctx)))
      (save-excursion
@@ -318,7 +318,9 @@ comes back."
        ,@body)))
 
 (defvar lcr-context-switch-hook nil
-"Hook to run when a context switch (lightweight yield) occurs.")
+"Hook to run when a context switch (lightweight yield) occurs.
+That is, when yielding control back to another thread or Emacs
+main loop.")
 
 (defun lcr-refresh-modelines ()
   "Update all modelines."
@@ -347,14 +349,19 @@ main loop."
 
 (defmacro lcr-context-switch (&rest body)
   "Save the current context, to restore it in a continuation.
-The current continuation is passed as CONT and can be called
-within a BODY by using the macro `lcr-resume'.  The operations
-performed here correspond to a context-switch in operating-system
-parlance.  After BODY is run `lcr-scheduler' is called.
-
 This macro must be used every time a continuation isn't run right
 away, but rather is stored in a data structure for running later,
-be it a timer, waiting on a process, etc."
+be it a timer, waiting on a process, etc. The BODY will store the
+continuation
+.  But, it must not store it as such, but rather it
+should wrap it by using the macro `lcr-resume'.  This ensures
+that the context is properly restored at the point the
+contiuation will be restored.  performed here correspond to a
+context-switch in operating-system parlance.  After BODY is run,
+`lcr-scheduler' is called.  Indeed, the purpose of storing a
+continuation to run later is precisely to switch control to
+another green process, or return to the Emacs main loop.
+"
   (declare (indent 2))
   `(let ((ctx (lcr--context)))
      (cl-macrolet ((lcr-resume (cont &rest args)
