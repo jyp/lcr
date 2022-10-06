@@ -74,6 +74,15 @@
                   macroexpand-all-environment))
          (not lcr-yield-seen))))
 
+
+(defmacro lcr--do (continuation &rest body)
+  "Transform BODY to CPS, and call CONTINUATION on the result."
+  (declare (indent 1))
+  (let ((exp-body (macroexpand-all `(progn ,@body) macroexpand-all-environment)))
+    ;; expand all macros so lcr--transform-1 only has to deal with basic constructs.
+    `(progn
+       ,(lcr--transform-1 exp-body (lambda (x) `(funcall ,continuation ,x))))))
+
 (defmacro lcr-def (name arglist &rest body)
   "Define a lightweight coroutine (lcr) with NAME, ARGLIST and BODY.
 The defined lcr is added an extra continuation argument and the
@@ -82,12 +91,15 @@ Within an lcr, call another lcr using `lcr-call' (this will
 forward the continuation as expected).  From the outside, use
 `lcr-async-let' or call the lcr with an explicit continuation."
   (declare (doc-string 3) (indent 2))
-  (let ((exp-body (macroexpand-all `(progn ,@body) macroexpand-all-environment)))
-    ;; expand all macros so lcr--transform-1 only has to deal with basic constructs.
-    `(progn
-       (put (quote ,name) 'lcr? t)
-       (defun ,name ,(-snoc  arglist 'lcr--continuation)
-         ,(lcr--transform-1 exp-body (lambda (x) `(funcall lcr--continuation ,x)))))))
+  `(progn
+     (put (quote ,name) 'lcr? t)
+     (defun ,name ,(-snoc  arglist 'lcr--continuation)
+       (lcr--do lcr--continuation ,@body))))
+
+(defmacro lcr-spawn (&rest body)
+  "Expand BODY and run `lcr-scheduler' when done."
+  (declare (indent 0))
+  `(lcr--do (lambda (_) (lcr-scheduler)) ,@body))
 
 ;; (defmacro lcr-async-bind (var expr &rest body)
 ;;   "Bind VAR in a continuation passed to EXPR with contents BODY.
@@ -123,6 +135,9 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
   (pcase bindings
     (`((,vars ,expr)) `(progn (lcr-cps-bind ,vars ,expr ,@body) (lcr-scheduler)))
     (`((,vars ,expr) . ,rest) `(lcr-cps-bind ,vars ,expr (lcr-cps-let ,rest ,@body)))))
+
+;; TODO: can be implemented as follows in the 1-variable return case.
+;; (lcr-spawn (let ,(--map ((car it) . (lcr-call (cdr it))) bindings) ,@body))
 
 (defun lcr--transform-body (forms k)
   "Transform FORMS and pass the result of the last form to K."
