@@ -253,7 +253,7 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
                              ,(lcr--transform-1
                                test
                                (lambda (x) `(if ,x
-                                                ,(lcr--transform-1 `(progn ,@body) (lambda (_) `(lcr-yield ,while-fun)))
+                                                ,(lcr--transform-1 `(progn ,@body) (lambda (_) `(funcall ,while-fun)))
                                               ,(funcall k 'nil))))))
           (funcall ,while-fun))))
     ;; Process various kinds of `quote'.
