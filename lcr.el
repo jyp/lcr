@@ -329,10 +329,6 @@ main loop.")
 (defvar lcr-ready-in (list) "List of ready processes, inbound portion of queue.")
 (defvar lcr-ready-out (list) "List of ready processes, outbound portion of queue.")
 
-(defun lcr-yield (cont)
-  "Enqueue the ready process CONT."
-  (push cont lcr-ready-in))
-
 (defun lcr-scheduler ()
   "This is the main loop of the lcr 'OS'.
 This is a simple FIFO scheduler.  The ready queue is polled for
@@ -408,6 +404,12 @@ function is a lightweight coroutine, see `lcr'."
 (defun lcr-set-local (var val buffer)
   "Set variable VAR to value VAL in BUFFER."
   (with-current-buffer buffer (set (make-local-variable var) val)))
+
+(defun lcr-yield (cont)
+  "Enqueue the ready process CONT."
+  (lcr-context-switch
+    (push (lambda () (lcr-resume cont)) lcr-ready-in))
+  (lcr-scheduler))
 
 (defun lcr-wait (secs continue)
   "Wait SECS then CONTINUE.
