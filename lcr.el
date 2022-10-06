@@ -186,14 +186,6 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
                             (progn ,@body)
                           (cond ,@rest))
                        k))
-    (`(cond (,condition) . ,rest)
-      (lcr--transform-1 `(or ,condition (cond ,@rest))
-                        next-state))
-    (`(cond (,condition . ,body) . ,rest)
-      (lcr--transform-1 `(if ,condition
-                             (progn ,@body)
-                           (cond ,@rest))
-                        next-state))
 
     ;; Process `if'.
 
