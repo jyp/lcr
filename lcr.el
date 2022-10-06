@@ -408,7 +408,7 @@ outputs text and `lcr-process-read' is not waiting for output,
 the data is simply appended to the process' buffer.  This
 function is a lightweight coroutine, see `lcr'."
   (if (buffer-local-value 'lcr-process-callback buffer)
-      (funcall continue "lcr-process-read: try to read from (%s), but another coroutine is reading from it already.")
+      (error "lcr-process-read: Tried to read from (%s), but another coroutine is reading from it already" buffer)
     (lcr-context-switch
         (lcr-set-local 'lcr-process-callback
                        (lambda (input)
