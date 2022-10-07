@@ -76,7 +76,7 @@
 
 
 (defmacro lcr--do (continuation &rest body)
-  "Transform BODY to CPS, and call CONTINUATION on the result."
+  "Transform BODY to CPS, run it with CONTINUATION."
   (declare (indent 1))
   (let ((exp-body (macroexpand-all `(progn ,@body) macroexpand-all-environment)))
     ;; expand all macros so lcr--transform-1 only has to deal with basic constructs.
@@ -97,9 +97,19 @@ forward the continuation as expected).  From the outside, use
        (lcr--do lcr--continuation ,@body))))
 
 (defmacro lcr-spawn (&rest body)
-  "Expand BODY and run `lcr-scheduler' when done."
+  "Spawn BODY as a green thread.
+Do this by transforming it to CPS, and run `lcr-scheduler' when done."
   (declare (indent 0))
   `(lcr--do (lambda (_) (lcr-scheduler)) ,@body))
+
+(defmacro lcr-spawn-and-wait (&rest body)
+  "Spawn BODY as a green thread, wait for it to be done and return the result."
+  `(let (result done)
+     (lcr-spawn
+       (setq result (progn ,@body))
+       (setq done t))
+     (while (not done) (sleep-for 0.01))
+     result))
 
 ;; (defmacro lcr-async-bind (var expr &rest body)
 ;;   "Bind VAR in a continuation passed to EXPR with contents BODY.
@@ -447,6 +457,7 @@ This function is a lightweight coroutine, see `lcr'."
 ;;   (let ((next-process (pop (lcr-sema-queue sema))))
 ;;     (if next-process (funcall next-process ())
 ;;       (setf (lcr-sema-free? sema) t))))
+(make-obsolete 'lcr-blocking-call 'lcr-spawn-and-wait "20221007")
 
 (defun lcr-blocking-call (cont)
   "Call CONT as (CONT K) and block until (K res) is called, then return res."
@@ -455,6 +466,7 @@ This function is a lightweight coroutine, see `lcr'."
     ;; use a list so that even 'nil' will be detected as a result.
     (while (not result) (sleep-for 0.01))
     (car result)))
+
 
 (provide 'lcr)
 ;;; lcr.el ends here
