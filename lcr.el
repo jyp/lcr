@@ -225,24 +225,23 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
       (lambda (_) (lcr--transform-1 `(progn ,@rest)
                                     k))))
 
-    ;; Process `let'.
-    (`(let () . ,body)
-      (lcr--transform-1 `(progn ,@body) k))
+    ;; Process `let*'.
     (`(let* () . ,body)
-      (lcr--transform-1 `(progn ,@body) k))
-    ((and `(let ,vars . ,body) (guard (-all? 'atom vars)))
-     `(let ,@vars ,(lcr--transform-1 `(progn ,@body) k)))
-    ((and `(let* ,vars . ,body) (guard (-all? 'atom vars)))
-     `(let ,@vars ,(lcr--transform-1 `(progn ,@body) k)))
+     (lcr--transform-1 `(progn ,@body) k))
+    ((and `(let* ,vars . ,body) (guard (-all? 'atom vars))) ; to avoid excessively long terms
+     `(let ,vars ,(lcr--transform-1 `(progn ,@body) k)))
+    ((and `(let* (,var . ,more-bindings) . ,body) (guard (atom var)))
+        `(let* (,var) ,(lcr--transform-1 `(let* ,more-bindings ,@body) k)))
+    (`(let* ((,var ,value-form) . ,more-bindings) . ,body)
+     (lcr--transform-1
+      value-form
+      (lambda (x) `(let* ((,var ,x)) ,(lcr--transform-1 `(let* ,more-bindings ,@body) k)))))
+    ;; Process `let'.
     (`(let ,bindings . ,body)
      (lcr--transform-n
-      (-map #'cadr bindings)
-      (lambda (xs) `(let ,(-zip-with 'list (-map #'car bindings) xs)
+      (--map (if (cdr-safe it) (cadr it) nil) bindings)
+      (lambda (xs) `(let ,(-zip-with 'list (--map (if (listp it) (car it) it) bindings) xs)
                       ,(lcr--transform-1 `(progn ,@body) k)))))
-    (`(let* ((,var ,value-form) . ,more-bindings) . ,body)
-        (lcr--transform-1
-         value-form
-         (lambda (x) `(let* ((,var ,x)) ,(lcr--transform-1 `(let* ,more-bindings ,@body) k)))))
     ;; Process `or'.
     (`(or) (lcr--transform-1 'nil k))
     (`(or ,condition) (lcr--transform-1 condition k))
@@ -308,9 +307,12 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
 ;; (lcr--transform-1 '(progn a b c d) (lambda (x) x))
 ;; (lcr--transform-1 '(if a b c d) (lambda (x) x))
 ;; (lcr--transform-1 '(if a (and e f) c d) (lambda (x) x))
-;; (lcr--transform-1 '(let () aowfutn) (lambda (x) x))
-;; (lcr--transform-1 '(let ((x yop)) (and a b)) (lambda (x) x))
-;; (lcr--transform-1 '(let* ((x yop)) (and a b)) (lambda (x) x))
+;; (lcr--transform-1 '(let () body) (lambda (x) x))
+;; (lcr--transform-1 '(let* () body) (lambda (x) x))
+;; (lcr--transform-1 '(let (x y) (and a b)) (lambda (x) x))
+;; (lcr--transform-1 '(let* (x y) (and a b)) (lambda (x) x))
+;; (lcr--transform-1 '(let ((x (lcr-call val1)) y (z (stuff))) ok) (lambda (x) x))
+;; (lcr--transform-1 '(let* ((x (lcr-call val1)) y (z (stuff))) ok) (lambda (x) x))
 ;; (lcr--transform-1 '(or) (lambda (x) x))
 ;; (lcr--transform-1 '(or a) (lambda (x) x))
 ;; (lcr--transform-1 '(or a b) (lambda (x) x))
