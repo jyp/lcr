@@ -137,6 +137,8 @@ So (lcr-cps-bind x (fun arg) body) expands to (fun arg (λ (x) body))"
       `(,@expr (lambda ,vars ,@body))
     `(,@expr (lambda (,vars) ,@body))))
 
+(make-obsolete 'lcr-cps-let "Use `lcr-spawn' and regular `let' instead" "20221008")
+
 (defmacro lcr-cps-let (bindings &rest body)
 "Expand multiple BINDINGS and call BODY as a continuation.
 Example: (lcr-cps-let ((x (fun1 arg1)) (y z (fun2 arg2))) body)
