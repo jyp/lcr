@@ -134,6 +134,8 @@ Do this by transforming it to CPS, and run `lcr-scheduler' when done."
 ;;     (`((,vars ,expr)) `(progn (lcr-async-bind ,vars ,expr ,@body) (lcr-scheduler)))
 ;;     (`((,vars ,expr) . ,rest) `(lcr-async-bind ,vars ,expr (lcr-async-let ,rest ,@body)))))
 
+(make-obsolete 'lcr-cps-bind "Use `lcr-spawn' and regular `let' instead" "20221008")
+
 (defmacro lcr-cps-bind (vars expr &rest body)
   "Bind VARS in a continuation passed to EXPR with contents BODY.
 So (lcr-cps-bind x (fun arg) body) expands to (fun arg (λ (x) body))"
@@ -337,7 +339,7 @@ comes back."
 (defmacro lcr--with-context (ctx &rest body)
   "Temporarily switch to CTX (if possible) and run BODY."
   (declare (indent 1))
-  `(save-current-buffer
+  `(save-current-buffer ; TODO: simplify this
      (when (marker-buffer ,ctx) (set-buffer (marker-buffer ,ctx)))
      (save-excursion
        (goto-char ,ctx)
@@ -375,21 +377,21 @@ main loop."
 This macro must be used every time a continuation isn't run right
 away, but rather is stored in a data structure for running later,
 be it a timer, waiting on a process, etc. The BODY will store the
-continuation
-.  But, it must not store it as such, but rather it
+continuation.  But, it must not store it as such, but rather it
 should wrap it by using the macro `lcr-resume'.  This ensures
 that the context is properly restored at the point the
-contiuation will be restored.  performed here correspond to a
-context-switch in operating-system parlance.  After BODY is run,
-`lcr-scheduler' is called.  Indeed, the purpose of storing a
-continuation to run later is precisely to switch control to
-another green process, or return to the Emacs main loop."
+contiuation will be restored. The actions performed here
+correspond to a context-switch in operating-system parlance.
+After BODY is run, `lcr-scheduler' is called.  Indeed, the
+purpose of storing a continuation to run later is precisely to
+switch control to another green process, or return to the Emacs
+main loop."
   (declare (indent 0))
   `(let ((ctx (lcr--context)))
      (cl-macrolet ((lcr-resume (cont &rest args)
                                `(lcr--with-context ctx
                                   (funcall ,cont ,@args))))
-       (progn ,@body
+       (progn ,@body ;; TODO: is progn needed here?
               ;; at this point the green thread (cont) is waiting. So
               ;; schedule something else.
               (lcr-scheduler)))))
