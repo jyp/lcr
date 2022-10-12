@@ -60,7 +60,12 @@
 
 (defun lcr-call (fun &rest args)
   "Call the coroutine FUN with arguments ARGS."
-  (error "`lcr-call' used outside a co-routine (%S %S)" fun args))
+  (error "`lcr-call' used outside `lcr-spawn' (%S %S)" fun args))
+
+(defun lcr-halt (fun &rest args)
+  "End the coroutine by calling the regular function FUN with arguments ARGS."
+  (error "`lcr-halt' used outside `lcr-spawn' (%S %S)" fun args))
+
 
 (defconst lcr-inhibit-atomic-optimization nil)
 (defvar lcr-yield-seen nil)
@@ -69,7 +74,8 @@
   (and (not lcr-inhibit-atomic-optimization)
        (let* ((lcr-yield-seen nil))
          (ignore (macroexpand-all
-                  `(cl-macrolet ((lcr-call (fun &rest args) (setf lcr-yield-seen t)))
+                  `(cl-macrolet ((lcr-call (fun &rest args) (setf lcr-yield-seen t))
+                                 (lcr-halt (fun &rest args) (setf lcr-yield-seen t)))
                      ,form)
                   macroexpand-all-environment))
          (not lcr-yield-seen))))
@@ -292,6 +298,9 @@ expands to: (fun1 arg1 (λ (x) (fun2 arg2 (λ (y z) body))))."
      (lcr--transform-1 `(let ((buf (current-buffer))) (prog1 (progn ,@body) (set-buffer buf))) k))
 
     ;; Process function calls
+    (`(lcr-halt . (,callback . ,args))
+       (lcr--transform-n args (lambda (xs)
+                                `(funcall ,callback ,@xs))))
     (`(lcr-call . (,fun . ,args))
      (let ((var (cl-gensym "v")))
        (lcr--transform-n args (lambda (xs)
