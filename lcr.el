@@ -100,7 +100,12 @@ forward the continuation as expected).  From the outside, use
   "Spawn BODY as a green thread.
 Do this by transforming it to CPS, and run `lcr-scheduler' when done."
   (declare (indent 0))
-  `(lcr--do (lambda (_) (lcr-scheduler)) ,@body))
+  `(save-excursion
+     ;; the child thread is liable to do change the context, which we
+     ;; do not want the parent thread to observe. (The first chunk of
+     ;; the child is actually running in the same context so we must
+     ;; save the context.)
+     (lcr--do (lambda (_) (lcr-scheduler)) ,@body)))
 
 (defmacro lcr-spawn-and-wait (&rest body)
   "Spawn BODY as a green thread, wait for it to be done and return the result."
